@@ -1,23 +1,27 @@
 import asyncio
 import logging
+import os
 from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-# Твой токен вставлен сюда
-TOKEN = "8406724108:AAH1UCLZhTejHluWSsFb1kIJlAGQWMoTtzI"
-
-# Включаем логирование
+# Включаем логирование, чтобы видеть работу бота в консоли Render
 logging.basicConfig(level=logging.INFO)
+
+# Бот будет брать токен из переменной BOT_TOKEN, которую ты указал в Render
+TOKEN = os.getenv("BOT_TOKEN")
+
+if not TOKEN:
+    logging.error("Ошибка: Переменная BOT_TOKEN не найдена в настройках!")
+    exit()
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# База данных в памяти (сбросится при перезагрузке бота)
+# Временная память для хранения даты старта
 users_db = {}
 
-# --- КОМАНДА /start ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     builder = InlineKeyboardBuilder()
@@ -27,61 +31,54 @@ async def cmd_start(message: types.Message):
     builder.adjust(1)
     
     await message.answer(
-        "Привет! Я твой Reset-Bot.\nДавай начнем новую жизнь прямо сейчас.\nЧто бросаем?", 
+        "Привет! Я твой Reset-Bot.\nТвой путь к свободе начинается здесь. Что бросаем?", 
         reply_markup=builder.as_markup()
     )
 
-# --- ОБРАБОТКА КНОПОК ---
 @dp.callback_query(F.data.startswith("quit_"))
 async def callbacks_num(callback: types.CallbackQuery):
     action = callback.data.split("_")[1]
+    habit = "курить" if action == "smoke" else "пить"
+    if action == "both": habit = "пить и курить"
     
-    if action == "smoke":
-        habit = "курить"
-    elif action == "drink":
-        habit = "пить"
-    else:
-        habit = "пить и курить"
-    
-    # Запоминаем время нажатия
     users_db[callback.from_user.id] = {
         "start_date": datetime.now(),
         "habit": habit
     }
     
-    await callback.message.edit_text(f"✅ Принято! Таймер запущен.\nТвоя цель: не {habit}.\n\nЕсли станет тяжело — пиши /help.\nЧтобы узнать прогресс — пиши /stats.")
+    await callback.message.edit_text(
+        f"✅ Таймер запущен!\nТы больше не будешь {habit}.\n\nПроверить прогресс: /stats"
+    )
 
-# --- КОМАНДА /stats (Статистика) ---
 @dp.message(Command("stats"))
 async def cmd_stats(message: types.Message):
     user_data = users_db.get(message.from_user.id)
-    
     if not user_data:
-        await message.answer("Таймер не запущен. Нажми /start")
+        await message.answer("Сначала нажми /start, чтобы запустить счетчик.")
         return
 
     now = datetime.now()
     delta = now - user_data["start_date"]
     
     days = delta.days
-    seconds = delta.seconds
-    hours = seconds // 3600
-    minutes = (seconds // 60) % 60
-    
-    habit = user_data["habit"]
+    hours = delta.seconds // 3600
+    minutes = (delta.seconds // 60) % 60
     
     await message.answer(
-        f"🏆 **Твой прогресс**\n"
-        f"Ты не {habit} уже:\n"
+        f"🏆 **Твой результат**\n"
+        f"Ты держишься уже:\n"
         f"📅 Дней: {days}\n"
         f"⏰ Часов: {hours}\n"
         f"⏱ Минут: {minutes}\n\n"
-        f"Так держать! Ты сильнее привычки."
+        f"Горжусь тобой! Не сдавайся! 💪"
     )
 
-# --- ЗАПУСК ---
 async def main():
+    # Запуск процесса опроса (polling)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Бот остановлен")
