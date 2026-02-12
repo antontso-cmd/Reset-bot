@@ -9,10 +9,17 @@ from aiogram.filters import Command
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 import google.generativeai as genai
 
+# Добавляем aiohttp для health check (чтобы Render не убивал сервис)
+import aiohttp
+from aiohttp import web
+
 # Настройки
 logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
+
+if not BOT_TOKEN or not GEMINI_KEY:
+    raise ValueError("BOT_TOKEN или GEMINI_API_KEY не найдены в переменных окружения!")
 
 genai.configure(api_key=GEMINI_KEY)
 model = genai.GenerativeModel('gemini-1.5-flash')
@@ -20,7 +27,7 @@ model = genai.GenerativeModel('gemini-1.5-flash')
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- БАЗА ДАННЫХ (Чтобы ничего не сбрасывалось) ---
+# --- БАЗА ДАННЫХ ---
 def init_db():
     conn = sqlite3.connect("reset_pro.db")
     cursor = conn.cursor()
@@ -40,14 +47,14 @@ def get_user_data(user_id):
     conn.close()
     return res
 
-# --- ГЛАВНОЕ МЕНЮ (Красивые кнопки) ---
+# --- ГЛАВНОЕ МЕНЮ ---
 def main_menu():
     builder = ReplyKeyboardBuilder()
     builder.row(types.KeyboardButton(text="📊 Статистика"), types.KeyboardButton(text="🩺 Здоровье"))
     builder.row(types.KeyboardButton(text="🤖 Чат с ИИ-коучем"), types.KeyboardButton(text="⚙️ Сброс"))
     return builder.as_markup(resize_keyboard=True)
 
-# --- ОБРАБОТЧИКИ ---
+# --- ОБРАБОТЧИКИ (твои, без изменений) ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
     init_db()
@@ -64,7 +71,7 @@ async def cmd_start(message: types.Message):
 @dp.callback_query(F.data.startswith("set_"))
 async def setup_step1(callback: types.CallbackQuery):
     habit = "курение" if "smoking" in callback.data else "алкоголь"
-    dp["temp_habit"] = habit
+    dp["temp_habit"] = habit  # храним временно в диспетчере
     await callback.message.edit_text(f"Ты выбрал: {habit}. \nСколько денег в день (цифрой) ты на это тратил?")
 
 @dp.message(lambda message: message.text.isdigit())
@@ -113,19 +120,41 @@ async def ai_handler(message: types.Message):
     user_data = get_user_data(message.from_user.id)
     context = f"Юзер бросает {user_data[1]}." if user_data else ""
     
-    # Показываем статус "печатает"
     await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
     
     try:
         prompt = f"Ты элитный коуч по борьбе с зависимостями. {context} Отвечай кратко, мощно и на русском. Вопрос: {message.text}"
         response = model.generate_content(prompt)
         await message.answer(response.text)
-    except:
+    except Exception as e:
+        logging.error(f"Gemini error: {e}")
         await message.answer("ИИ на подзарядке, попробуй через минуту!")
 
+# --- HEALTH CHECK ДЛЯ RENDER (важно!) ---
+async def health_check(request):
+    return web.Response(text="Bot is alive and running 🚀")
+
+# --- ГЛАВНАЯ ФУНКЦИЯ ---
 async def main():
     init_db()
-    await dp.start_polling(bot)
+
+    # Мини-сервер для Render (health check)
+    app = web.Application()
+    app.router.add_get('/', health_check)
+    app.router.add_get('/health', health_check)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv('PORT', 10000))  # Render сам подставит PORT
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logging.info(f"Health check сервер запущен на порту {port}")
+
+    # Запускаем polling в фоне
+    asyncio.create_task(dp.start_polling(bot))
+
+    # Держим приложение живым
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
     asyncio.run(main())
